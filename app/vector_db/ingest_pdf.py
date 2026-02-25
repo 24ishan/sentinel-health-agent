@@ -20,7 +20,7 @@ PDF_PATH = "data/tachycardia_1.pdf"
 
 def ingest_medical_data():
     loader = PyPDFLoader(PDF_PATH)
-    docs = loader.load()[:2]
+    docs = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
     chunks = text_splitter.split_documents(docs)

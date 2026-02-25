@@ -71,7 +71,7 @@ async def process_critical_alert(data, hr):
     print(f"💾 Alert Saved to DB for HR: {hr}")
 @app.get("/")
 async def status():
-    return {"status": "Agent Active", "mode": "Mock" if os.getenv("MOCK_AI") == "True" else "Live"}
+    return {"status": "Agent Active"}
 
 @app.get("/history", response_model=List[ClinicalAlertResponse])
 async def get_alert_history(limit: int = 10, patient_id: str = "PATIENT_001"):
