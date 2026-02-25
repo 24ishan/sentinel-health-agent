@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
+from app.backend.models import Base
 
 load_dotenv()
 
@@ -36,6 +37,9 @@ async def init_db():
                                     );
                                 """))
         print("✅ Table 'test_vectors' created.")
+
+        await conn.run_sync(Base.metadata.create_all)
+        print("✅ Clinical Alerts table synchronized.")
 
     await engine.dispose()
 
