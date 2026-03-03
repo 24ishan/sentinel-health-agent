@@ -1,3 +1,4 @@
+#TODO add logic for batch processing of pdf files
 import os
 import hashlib
 from langchain_postgres import PGVectorStore, PGEngine
