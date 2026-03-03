@@ -1,15 +1,11 @@
 import os
-import httpx
-
-# Tell Python to ignore proxies for your local network
-os.environ["NO_PROXY"] = "localhost,127.0.0.1,192.168.1.7"
-os.environ["OLLAMA_HOST"] = "http://192.168.1.7:11434"
+os.environ["NO_PROXY"] = "localhost,127.0.0.1,192.168.1.6"
+os.environ["OLLAMA_HOST"] = "http://192.168.1.6:11434"
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings  # Note the cleaner import
 from langchain_postgres.vectorstores import PGVector  # New library
-os.environ["OLLAMA_HOST"] = "http://192.168.1.7:11434"
 load_dotenv()
 
 # Configuration
@@ -20,7 +16,7 @@ PDF_PATH = "data/tachycardia_1.pdf"
 
 def ingest_medical_data():
     loader = PyPDFLoader(PDF_PATH)
-    docs = loader.load()
+    docs = loader.load()[:10]
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
     chunks = text_splitter.split_documents(docs)
