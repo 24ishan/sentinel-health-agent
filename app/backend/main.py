@@ -1,9 +1,10 @@
 import asyncio
-import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+
+from app import setup_logging
 from app.backend.services.history import AlertHistory
 from app.backend.schemas import ClinicalAlertResponse
 from app.config import DATABASE_URL
@@ -13,23 +14,7 @@ from kafka.errors import KafkaError
 from app.backend.services.process_alerts import ProcessAlerts
 from config import KAFKA_CONSUMER_TOPIC, KAFKA_BOOTSTRAP_SERVERS
 from typing import List
-import logging
 import os
-
-# Configure structured logging
-def setup_logging():
-    log_level = os.getenv("LOG_LEVEL", "INFO")
-    logger = logging.getLogger("sentinel_health_agent")
-    logger.setLevel(log_level)
-
-    # Console handler only
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s'
-    ))
-    logger.addHandler(console_handler)
-
-    return logger
 
 logger = setup_logging()
 
@@ -60,7 +45,7 @@ kafka_task = None
 MAX_RETRIES = 5
 RETRY_DELAY = 5
 KAFKA_POLL_TIMEOUT = 1000
-MAX_POLL_RECORDS = 10  # Reduced for WiFi stability
+MAX_POLL_RECORDS = 10
 
 
 @asynccontextmanager
