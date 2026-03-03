@@ -1,13 +1,12 @@
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI,UploadFile, File, BackgroundTasks, HTTPException, Depends
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-
 from app import setup_logging
 from app.backend.services.history import AlertHistory
 from app.backend.schemas import ClinicalAlertResponse
-from app.config import DATABASE_URL
+from app.config import DATABASE_URL, VECTOR_TABLE_NAME, OLLAMA_HOST
 import json
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
@@ -15,6 +14,9 @@ from app.backend.services.process_alerts import ProcessAlerts
 from config import KAFKA_CONSUMER_TOPIC, KAFKA_BOOTSTRAP_SERVERS
 from typing import List
 import os
+import uuid
+import shutil
+from app.vector_db.ingest_pdf import PostgresRAGManager
 
 logger = setup_logging()
 
@@ -161,7 +163,46 @@ async def get_alert_history(limit: int = 10, patient_id: str = "PATIENT_001"):
     return await history_obj.get_alert_history(limit, patient_id)
 
 
+@app.post("/upload")
+async def upload_document(
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...)
+):
+    """
+    Uploads a PDF and triggers background indexing.
+    """
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+    # 2. Save file temporarily
+    temp_id = str(uuid.uuid4())
+    temp_path = f"temp_{temp_id}_{file.filename}"
+
+    with open(temp_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # 3. Add indexing to Background Tasks
+    # This runs AFTER the response is sent to the user
+    async def run_indexing(file_path: str):
+        """Worker function to process the file and cleanup."""
+        try:
+
+            rag_manager = await PostgresRAGManager.create(engine, VECTOR_TABLE_NAME, OLLAMA_HOST)
+            await rag_manager.index_file(file_path)
+        finally:
+            # 4. Always cleanup the temp file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+    background_tasks.add_task(run_indexing, temp_path)
+
+    return {
+        "message": f"File '{file.filename}' uploaded successfully.",
+        "status": "Indexing started in background",
+        "job_id": temp_id
+    }
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.backend.main:app", host="0.0.0.0", port=8000, reload=False)

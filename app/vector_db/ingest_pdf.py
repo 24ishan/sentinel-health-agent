@@ -1,6 +1,6 @@
 import os
 import hashlib
-from langchain_postgres import PGEngine, PGVectorStore
+from langchain_postgres import PGVectorStore, PGEngine
 from langchain_ollama import OllamaEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -9,32 +9,45 @@ logger = setup_logging()
 
 
 class PostgresRAGManager:
-    def __init__(self, engine: PGEngine, table_name: str, ollama_host: str):
+    def __init__(self, engine, table_name: str, ollama_host: str):
         self.engine = engine
         self.table_name = table_name
         self.ollama_host = ollama_host
-
+        self.vector_store = None
         self.embeddings = OllamaEmbeddings(
             model="nomic-embed-text",
             base_url=self.ollama_host
         )
 
+    @classmethod
+    async def create(cls, engine, table_name, ollama_host):
+        """FACTORY METHOD: Use this to create and initialize the manager."""
+        instance = cls(engine, table_name, ollama_host)
+        await instance._initialize()
+        return instance
+
+    async def _initialize(self):
+        """Handles the actual async database setup."""
+        pg_engine = PGEngine.from_engine(self.engine)
         try:
-            self.engine.init_vectorstore_table(
+            # 1. Initialize the table schema asynchronously
+            await pg_engine.ainit_vectorstore_table(
                 table_name=self.table_name,
-                vector_size=768,
-                id_column="langchain_id"
+                vector_size=768
             )
             logger.info(f"Table '{self.table_name}' initialized.")
         except Exception as e:
-            if "already exists" not in str(e).lower():
-                logger.error(f"Critical DB Init Error: {e}")
-                raise
+            if "already exists" in str(e).lower():
+                logger.info(f"Table '{self.table_name}' already exists. Skipping creation.")
+            else:
+                logger.error(f"Unexpected error during table init: {e}")
+                raise e
 
-        self.vector_store = PGVectorStore.create_sync(
-            engine=self.engine,
-            embedding_service=self.embeddings,
+        # 2. Create the Vector Store instance asynchronously
+        self.vector_store = await PGVectorStore.create(
+            engine=pg_engine,
             table_name=self.table_name,
+            embedding_service=self.embeddings,
             id_column="langchain_id"
         )
 
@@ -46,22 +59,22 @@ class PostgresRAGManager:
                 hasher.update(chunk)
         return hasher.hexdigest()
 
-    def is_already_indexed(self, file_hash: str) -> bool:
+    async def is_already_indexed(self, file_hash: str) -> bool:
         """Checks if the file hash exists in the metadata."""
-        results = self.vector_store.similarity_search(
+        results = await self.vector_store.asimilarity_search(
             query="", # Empty query avoids heavy vector math
             k=1,
             filter={"file_hash": file_hash}
         )
         return len(results) > 0
 
-    def index_file(self, file_path: str):
+    async def index_file(self, file_path: str):
         """Loads, chunks, and persists a PDF if it hasn't been indexed."""
         file_name = os.path.basename(file_path)
         file_hash = self.get_file_hash(file_path)
 
         # Deduplication Check
-        if self.is_already_indexed(file_hash):
+        if await self.is_already_indexed(file_hash):
             logger.info(f"Skipping '{file_name}': Already present in database.")
             return
 
@@ -87,28 +100,57 @@ class PostgresRAGManager:
                     "source": file_name
                 })
 
-            self.vector_store.add_documents(chunks)
-            logger.info(f"Successfully stored {len(chunks)} chunks in pgvector.")
+            await self.vector_store.aadd_documents(chunks)
+            logger.info(f"✅ Processing complete for {file_name}")
+            logger.debug(f"🔐 File hash: {file_hash}")
 
+            return {
+                "status": "indexed",
+                "chunks": len(chunks),
+                "message": f"Successfully indexed {len(chunks)} chunks"
+            }
         except Exception as e:
-            logger.error(f"Failed to index {file_name}: {str(e)}")
+            logger.error(f"Failed to index {file_name}: {str(e)}", exc_info=True)
+            raise
 
-    def search(self, query: str, limit: int = 3):
-        """Simple retrieval function for testing."""
-        return self.vector_store.similarity_search(query, k=limit)
+    async def search(self, query: str, limit: int = 3):
+        try:
+            if not query or not query.strip():
+                logger.warning("Empty search query")
+                return []
+            results = await self.vector_store.asimilarity_search(query, k=limit)
+            logger.debug(f"🔍 Search returned {len(results)} results for: {query[:50]}...")
+            return results
+        except Exception as e:
+            logger.error(f"Search failed: {e}", exc_info=True)
+            return []
 
 
 if __name__ == "__main__":
-    from app.config import DATABASE_URL,VECTOR_TABLE_NAME,OLLAMA_HOST
 
-    engine = PGEngine.from_connection_string(DATABASE_URL)
-    manager = PostgresRAGManager(engine,VECTOR_TABLE_NAME,OLLAMA_HOST)
+    async def main():
+        from app.config import DATABASE_URL, VECTOR_TABLE_NAME, OLLAMA_HOST
+        from sqlalchemy.ext.asyncio import create_async_engine
 
-    # Optional: Reset everything if you have old, broken tables
-    # manager.engine.drop_tables()
+        # 1. Create the Async Engine
+        engine = create_async_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            pool_size=20,
+            max_overflow=0
+        )
+        manager = await PostgresRAGManager.create(engine, VECTOR_TABLE_NAME, OLLAMA_HOST)
 
-    pdf_path = "data/tachycardia_1.pdf"
-    if os.path.exists(pdf_path):
-        manager.index_file(pdf_path)
-    else:
-        print("Please provide a valid PDF path to test.")
+        # 3. Process File
+        pdf_path = "data/tachycardia_1.pdf"
+        if os.path.exists(pdf_path):
+            await manager.index_file(pdf_path)
+
+            # Test search
+            results = await manager.search("What is tachycardia?")
+            print(f"Search found {len(results)} results.")
+        else:
+            print(f"File not found: {pdf_path}")
+
+    import asyncio
+    asyncio.run(main())
