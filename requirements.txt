@@ -1,19 +1,37 @@
-fastapi==0.111.0
-uvicorn==0.30.1
-python-multipart==0.0.9
-kafka-python==2.0.2
-sqlalchemy==2.0.30
-psycopg[binary,pool]==3.1.18
-asyncpg==0.29.0
-langchain==0.2.1
-langchain-community==0.2.1
-langchain-ollama==0.1.0
-pypdf==4.2.0
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-streamlit==1.35.0
-ruff==0.4.4
-mypy==1.10.0
-pre-commit==3.7.1
-python-dotenv==1.0.1
+# --- Web Framework & Server ---
+fastapi==0.135.1
+uvicorn==0.41.0
+python-multipart==0.0.22
+
+# --- AI, RAG & LLM ---
+langchain==1.2.10
+langchain-community==0.4.1
+langchain-ollama==1.0.1
 langchain-postgres==0.0.17
+langgraph==1.0.10
+ollama==0.6.1
+pypdf==6.7.5
+
+# --- Database & ORM ---
+sqlalchemy==2.0.48
+psycopg[binary,pool]==3.3.3
+asyncpg==0.31.0
+pgvector==0.3.6
+
+# --- Messaging ---
+kafka-python==2.3.0
+
+# --- Security & Auth ---
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+pydantic==2.12.5
+pydantic-settings==2.13.1
+
+# --- UI & Environment ---
+streamlit==1.54.0
+python-dotenv==1.2.2
+
+# --- Dev Tools (Optional) ---
+ruff==0.15.4
+mypy==1.19.1
+pre-commit==4.5.1
