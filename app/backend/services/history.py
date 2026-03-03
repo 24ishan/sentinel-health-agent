@@ -1,6 +1,6 @@
 from fastapi import Query
 from sqlalchemy import select
-from ..models import ClinicalAlert
+from app.backend.models import ClinicalAlert
 
 class AlertHistory:
     def __init__(self,async_local):

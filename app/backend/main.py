@@ -4,20 +4,19 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from kafka import KafkaConsumer
-from dotenv import load_dotenv
 from app.backend.services.rag_service import rag_agent
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from app.backend.models import ClinicalAlert
 from app.backend.services.history import AlertHistory
 from app.backend.schemas import ClinicalAlertResponse
+from app.config import DATABASE_URL,KAFKA_CONSUMER_TOPIC,KAFKA_BOOTSTRAP_SERVERS
 from typing import List
 import logging
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
-engine = create_async_engine(os.getenv("DATABASE_URL"))
+engine = create_async_engine(DATABASE_URL)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 kafka_consumer = None
@@ -42,15 +41,12 @@ async def lifespan(app: FastAPI):
     logger.info("Kafka consumer and engine disposed")
 
 
-app = FastAPI(lifespan=lifespan)
-
-
 async def blocking_kafka_loop():
     global kafka_consumer
     try:
         kafka_consumer = KafkaConsumer(
-            "vitals_stream",
-            bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+            KAFKA_CONSUMER_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             value_deserializer=lambda x: json.loads(x.decode('utf-8')),
             auto_offset_reset='latest',
         )
@@ -88,6 +84,8 @@ async def process_critical_alert(data, hr):
         print(f"💾 Alert Saved to DB for HR: {hr}")
     except Exception as e:
         logger.error(f"Error processing critical alert: {e}")
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def status():

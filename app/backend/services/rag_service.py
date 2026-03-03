@@ -1,17 +1,13 @@
-import os
-from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings
 from langchain_postgres import PGVectorStore
 from langchain_postgres import PGEngine
 from langchain_ollama import OllamaLLM
-
-load_dotenv()
-MEDICAL_EMBEDDING = os.getenv("MEDICAL_EMBEDDING")
+from app.config import DATABASE_URL,MEDICAL_EMBEDDING
 
 class MedicalRAG:
     def __init__(self):
         self.embeddings = OllamaEmbeddings(model="llama3")
-        self.db_url = os.getenv("DATABASE_URL")
+        self.db_url = DATABASE_URL
         self.vector_store = None
         self.llm = OllamaLLM(model="llama3")
 
