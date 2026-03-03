@@ -45,5 +45,3 @@ class MedicalRAG:
 
         except Exception as e:
             return f"Error: {e}"
-
-rag_agent = MedicalRAG()
