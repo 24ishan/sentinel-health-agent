@@ -14,10 +14,7 @@ class PostgresRAGManager:
         self.table_name = table_name
         self.ollama_host = ollama_host
         self.vector_store = None
-        self.embeddings = OllamaEmbeddings(
-            model="nomic-embed-text",
-            base_url=self.ollama_host
-        )
+        self.embeddings = None
 
     @classmethod
     async def create(cls, engine, table_name, ollama_host):
@@ -26,9 +23,33 @@ class PostgresRAGManager:
         await instance._initialize()
         return instance
 
+    async def _init_embeddings_with_retry(self) -> OllamaEmbeddings:
+        max_retries = 3
+        retry_delay = 5
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Connecting to Ollama ({self.ollama_host})... Attempt {attempt}/{max_retries}")
+                embeddings = OllamaEmbeddings(
+                    model="nomic-embed-text",
+                    base_url=self.ollama_host
+                )
+                # Test connection
+                embeddings.embed_query("test")
+                logger.info("✅ Ollama connection successful")
+                return embeddings
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"❌ Failed to connect to Ollama after {max_retries} attempts: {e}")
+                    raise
+                logger.warning(
+                    f"⚠️ Ollama connection failed (attempt {attempt}/{max_retries}). Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+
     async def _initialize(self):
         """Handles the actual async database setup."""
         pg_engine = PGEngine.from_engine(self.engine)
+        self.embeddings = await self._init_embeddings_with_retry()
         try:
             # 1. Initialize the table schema asynchronously
             await pg_engine.ainit_vectorstore_table(
@@ -111,7 +132,7 @@ class PostgresRAGManager:
             }
         except Exception as e:
             logger.error(f"Failed to index {file_name}: {str(e)}", exc_info=True)
-            raise
+            return {"status": "failed", "chunks": 0, "error": str(e)}
 
     async def search(self, query: str, limit: int = 3):
         try:
