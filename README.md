@@ -1,73 +1,294 @@
-# 🩺 Sentinel Health Agent: Autonomous Clinical RAG Pipeline
+# 🏥 Sentinel Health Agent
 
-[![CI Quality Check](https://github.com/YOUR_USERNAME/sentinel-health-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/sentinel-health-agent/actions)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-
-An autonomous, event-driven healthcare monitoring system designed for elderly care. This project moves beyond simple threshold alerts by using **Retrieval-Augmented Generation (RAG)** to provide medically-grounded clinical decision support in real-time.
+An AI-powered, real-time clinical alert monitoring system that consumes patient vitals from Apache Kafka, enriches alerts with Retrieval-Augmented Generation (RAG) using local LLMs via Ollama, and persists structured clinical recommendations to PostgreSQL.
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ Architecture
 
-The system follows a distributed "Logic Node" architecture, separating data ingestion, clinical reasoning, and user interaction.
-
-
-
-### **Core Workflow**
-1.  **Ingestion:** A custom simulation engine streams physiological data (HR, SpO2) into **Apache Kafka**.
-2.  **Detection:** A **FastAPI** consumer monitors the stream. If a vital sign exceeds a deterministic threshold, an "Alert State" is triggered.
-3.  **Contextual Retrieval:** The system performs a semantic search in **PostgreSQL (pgvector)** to find relevant medical guidelines and fetches the patient's structured medical history.
-4.  **Reasoning:** Local **Ollama (Llama 3)** synthesizes the vitals, history, and guidelines to generate a personalized clinical recommendation.
-5.  **Visualization:** Real-time metrics and AI reasoning are displayed on a **Streamlit** dashboard.
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        SENTINEL HEALTH AGENT                        │
+│                                                                     │
+│  ┌──────────────┐    ┌─────────────────────────────────────────┐   │
+│  │  simulator.py│    │           FastAPI Backend                │   │
+│  │  (Producer)  │───▶│  /health  /history  /upload  /health/rag│   │
+│  └──────────────┘    └────────────────┬────────────────────────┘   │
+│         │                             │                             │
+│         ▼                             ▼                             │
+│  ┌──────────────┐    ┌─────────────────────────────────────────┐   │
+│  │    Apache    │    │           Kafka Consumer Loop            │   │
+│  │    Kafka     │───▶│   blocking_kafka_loop()                  │   │
+│  │   (Topic)    │    │   Polls CRITICAL / WARNING alerts        │   │
+│  └──────────────┘    └────────────────┬────────────────────────┘   │
+│                                       │                             │
+│                                       ▼                             │
+│                      ┌────────────────────────────────────────┐    │
+│                      │         ProcessAlerts Service           │    │
+│                      │                                        │    │
+│                      │  1. Fetch patient profile (UserStore)  │    │
+│                      │  2. Query RAG for medical context      │    │
+│                      │  3. Send enriched prompt → Ollama LLM  │    │
+│                      │  4. Parse structured clinical response  │    │
+│                      │  5. Persist alert to PostgreSQL         │    │
+│                      └────────────────┬───────────────────────┘    │
+│                                       │                             │
+│              ┌────────────────────────┼──────────────────┐         │
+│              ▼                        ▼                  ▼         │
+│  ┌─────────────────┐  ┌───────────────────────┐  ┌──────────────┐ │
+│  │   PostgreSQL    │  │     MedicalRAG         │  │    Ollama    │ │
+│  │                 │  │  (pgvector similarity) │  │  (Local LLM) │ │
+│  │ • alerts table  │  │  • PDF ingestion       │  │  • llama3.2  │ │
+│  │ • vector table  │  │  • chunk embeddings    │  │  • nomic-    │ │
+│  │                 │  │  • similarity search   │  │    embed-text│ │
+│  └─────────────────┘  └───────────────────────┘  └──────────────┘ │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                  Streamlit Dashboard                          │  │
+│  │            Real-time alert history viewer                     │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 🛠️ Tech Stack
+## 🔄 Data Flow
 
-* **Backend:** FastAPI (Asynchronous logic node)
-* **Message Broker:** Apache Kafka (Real-time telemetry)
-* **Database:** PostgreSQL with `pgvector` (Structured history + Unstructured medical embeddings)
-* **AI/LLM:** Ollama (Llama 3 for inference, `mxbai-embed-large` for embeddings)
-* **Orchestration:** LangChain (RAG pipeline management)
-* **Security:** OAuth 2.0 + JWT (Stateless authentication)
-* **Frontend:** Streamlit (Real-time monitoring dashboard)
-* **DevOps:** GitHub Actions (CI), Pre-commit hooks (Ruff, Mypy)
+```
+simulator.py
+    │
+    │  Produces JSON vitals every N seconds
+    │  { patient_id, heart_rate, status: CRITICAL/WARNING/NORMAL }
+    ▼
+Apache Kafka (topic: health-alerts)
+    │
+    │  KafkaConsumer polls in background asyncio task
+    ▼
+ProcessAlerts.process_critical_alert(data, heart_rate)
+    │
+    ├──▶ UserStore → fetch patient demographics/history
+    │
+    ├──▶ MedicalRAG → pgvector similarity search
+    │         └──▶ Returns relevant medical knowledge chunks
+    │
+    ├──▶ Ollama LLM → enriched clinical prompt
+    │         └──▶ Returns structured JSON recommendation
+    │
+    └──▶ PostgreSQL → persist ClinicalAlert record
+              └──▶ Available via GET /history
+```
 
 ---
 
-## 🚀 Senior-Level Features
+## 🧩 Component Overview
 
--   **Deterministic-Probabilistic Hybrid:** Combines reliable `if-this-then-that` alerting with nuanced LLM clinical reasoning.
--   **Stateless Security:** Implements industry-standard OAuth 2.0 flow with JWT tokens to secure sensitive health endpoints.
--   **Synthetic Data Generation:** Includes a specialized simulation engine to stress-test the pipeline without PII/HIPAA constraints.
--   **Scalable Event-Driven Design:** Uses Kafka to decouple data ingestion from clinical logic, allowing for horizontal scaling.
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| **FastAPI App** | `app/backend/main.py` | HTTP server, lifespan, Kafka task |
+| **Alert Processor** | `app/backend/services/process_alerts.py` | Core alert enrichment pipeline |
+| **RAG Service** | `app/backend/services/rag_service.py` | Vector similarity search |
+| **Alert History** | `app/backend/services/history.py` | PostgreSQL alert retrieval |
+| **PDF Ingestor** | `app/vector_db/ingest_pdf.py` | Chunk, embed, store PDFs |
+| **LLM Prompts** | `app/backend/services/prompts.py` | Clinical prompt templates |
+| **User Store** | `app/backend/store/user_store.py` | Patient profile management |
+| **Medical KB** | `app/backend/store/medical_knowledge.py` | Static knowledge base |
+| **DB Models** | `app/backend/models.py` | SQLAlchemy ORM models |
+| **Schemas** | `app/backend/schemas.py` | Pydantic request/response schemas |
+| **Config** | `app/utils/config.py` | Environment variable loading |
+| **Retry** | `app/utils/retry.py` | Resilient async retry decorator |
+| **Simulator** | `simulator.py` | Kafka producer for testing |
+| **DB Init** | `init_db.py` | Schema creation + seed data |
+| **Dashboard** | `app/dashboard/home.py` | Streamlit UI |
 
 ---
 
-## 📥 Getting Started
+## 🚀 Quick Start
 
-### **Prerequisites**
+### Prerequisites
+
 - Docker & Docker Compose
-- Conda or Python 3.11+
-- [Ollama](https://ollama.com/) installed and running locally
+- Python 3.11+
+- Ollama installed locally or via Docker
 
-### **Installation**
-1. **Clone & Setup Environment:**
-   ```bash
-   git clone [https://github.com/YOUR_USERNAME/sentinel-health-agent.git](https://github.com/YOUR_USERNAME/sentinel-health-agent.git)
-   cd sentinel-health-agent
-   conda create -n health-agent python=3.11
-   conda activate health-agent
-   pip install -r requirements.txt
-2. **Spin up Infrastructure:**
-    ```bash
-   docker-compose up -d
-3. **Prepare the AI:**
-    ```bash
-   ollama pull llama3
-   ollama pull mxbai-embed-large
-4. **Setup Database:**
-    ```bash
-   python init_db.py
-   
+### 1. Clone & Configure
+
+```bash
+git clone <repo-url>
+cd sentinel-health-agent
+cp .env.example .env   # Edit with your values
+```
+
+### 2. Environment Variables
+
+```env
+DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/sentinel
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_CONSUMER_TOPIC=health-alerts
+OLLAMA_HOST=http://localhost:11434
+VECTOR_TABLE_NAME=medical_embeddings
+```
+
+### 3. Start Infrastructure
+
+```bash
+docker-compose up -d
+```
+
+### 4. Pull Required Ollama Models
+
+```bash
+ollama pull llama3.2
+ollama pull nomic-embed-text
+```
+
+### 5. Initialize Database
+
+```bash
+python init_db.py
+```
+
+### 6. Install Dependencies
+
+```bash
+pip install -e .
+```
+
+### 7. Run the Agent
+
+```bash
+uvicorn app.backend.main:app --host 0.0.0.0 --port 8000
+```
+
+### 8. Run the Simulator (separate terminal)
+
+```bash
+python simulator.py
+```
+
+### 9. Launch Dashboard
+
+```bash
+streamlit run app/dashboard/home.py
+```
+
+---
+
+## 📡 API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/` | Agent status |
+| `GET` | `/health` | Comprehensive health check |
+| `GET` | `/health/rag` | RAG service health |
+| `GET` | `/history` | Alert history (paginated) |
+| `POST` | `/upload` | Upload PDF for indexing |
+
+### Example: Get Alert History
+
+```bash
+curl "http://localhost:8000/history?limit=10&patient_id=PATIENT_001"
+```
+
+### Example: Upload Medical PDF
+
+```bash
+curl -X POST "http://localhost:8000/upload" \
+  -F "file=@tachycardia_guide.pdf"
+```
+
+---
+
+## 🐳 Docker Compose Services
+
+```yaml
+services:
+  - postgres     # PostgreSQL 15 + pgvector extension
+  - kafka        # Apache Kafka (KRaft mode)
+  - ollama       # Local LLM server
+  - backend      # FastAPI application
+  - dashboard    # Streamlit UI
+```
+
+---
+
+## 📊 Database Schema
+
+```sql
+-- Clinical Alerts
+CREATE TABLE clinical_alerts (
+    id          UUID PRIMARY KEY,
+    patient_id  VARCHAR,
+    heart_rate  INTEGER,
+    status      VARCHAR,        -- CRITICAL / WARNING
+    analysis    TEXT,           -- LLM clinical analysis
+    action      TEXT,           -- Recommended action
+    severity    VARCHAR,
+    timestamp   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Vector Embeddings (pgvector)
+CREATE TABLE medical_embeddings (
+    id        UUID PRIMARY KEY,
+    content   TEXT,
+    embedding VECTOR(768),      -- nomic-embed-text dimensions
+    metadata  JSONB
+);
+```
+
+---
+
+## 🔧 Development
+
+### Project Structure
+
+```
+sentinel-health-agent/
+├── app/
+│   ├── backend/
+│   │   ├── main.py              # FastAPI + Kafka consumer
+│   │   ├── models.py            # SQLAlchemy models
+│   │   ├── schemas.py           # Pydantic schemas
+│   │   ├── constants.py         # Kafka constants
+│   │   └── services/
+│   │       ├── process_alerts.py # Alert pipeline
+│   │       ├── rag_service.py    # Vector search
+│   │       ├── history.py        # Alert history
+│   │       └── prompts.py        # LLM prompts
+│   ├── store/
+│   │   ├── user_store.py        # Patient profiles
+│   │   └── medical_knowledge.py # Static KB
+│   ├── vector_db/
+│   │   └── ingest_pdf.py        # PDF → pgvector pipeline
+│   ├── dashboard/
+│   │   └── home.py              # Streamlit UI
+│   └── utils/
+│       ├── config.py            # Env config
+│       └── retry.py             # Retry decorator
+├── simulator.py                 # Kafka producer
+├── init_db.py                   # DB setup
+├── docker-compose.yml
+└── requirements.txt
+```
+
+### Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+---
+
+## ⚠️ Known Issues & Roadmap
+
+- [ ] Authentication/Authorization (JWT)
+- [ ] Multi-patient concurrent processing
+- [ ] Alert deduplication logic
+- [ ] Metrics endpoint (Prometheus)
+- [ ] Alert webhook notifications
+- [ ] Frontend beyond Streamlit
+
+---
+
+## 📄 License
+
+MIT License — see `LICENSE` for details.

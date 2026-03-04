@@ -7,7 +7,7 @@ from app import setup_logging
 logger = setup_logging()
 
 class ProcessAlerts:
-    def __init__(self, AsyncSessionLocal: sessionmaker):
+    def __init__(self, AsyncSessionLocal: sessionmaker, rag_service=None):
         """
         Initialize ProcessAlerts.
 
@@ -15,7 +15,7 @@ class ProcessAlerts:
             AsyncSessionLocal: SQLAlchemy async session factory
         """
         self.AsyncSessionLocal = AsyncSessionLocal
-        self._rag_agent: MedicalRAG | None = None
+        self._rag_agent: MedicalRAG | None = rag_service
 
     async def _get_rag_agent(self) -> MedicalRAG:
         """
