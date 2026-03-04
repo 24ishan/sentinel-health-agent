@@ -1,10 +1,11 @@
+from typing import List, Optional
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
 import shutil
 import uuid
 from contextlib import asynccontextmanager
-from typing import List, Optional
 
 from fastapi import BackgroundTasks, File, FastAPI, HTTPException, UploadFile
 from kafka import KafkaConsumer
@@ -17,6 +18,8 @@ from app.backend.schemas import ClinicalAlertResponse
 from app.backend.services.history import AlertHistory
 from app.backend.services.process_alerts import ProcessAlerts
 from app.backend.services.rag_service import MedicalRAG
+from app.backend.routers import patients as patients_router
+from app.backend.routers import chatbot as chatbot_router
 from app.utils.config import (
     DATABASE_URL,
     KAFKA_BOOTSTRAP_SERVERS,
@@ -26,9 +29,6 @@ from app.utils.config import (
 )
 from app.backend.constants import (
     KAFKA_AUTO_OFFSET_RESET,
-    KAFKA_MAX_POLL_RECORDS,
-    KAFKA_MAX_RETRIES,
-    KAFKA_POLL_TIMEOUT_MS,
     KAFKA_RECONNECT_BACKOFF_MAX_MS,
     KAFKA_RECONNECT_BACKOFF_MS,
     KAFKA_REQUEST_TIMEOUT_MS,
@@ -36,11 +36,11 @@ from app.backend.constants import (
     KAFKA_SESSION_TIMEOUT_MS,
 )
 from app.vector_db.ingest_pdf import PostgresRAGManager
-from app.backend.schemas import UploadResponse, HealthCheckResponse, RAGHealthResponse
+from app.backend.schemas import UploadResponse
 
 logger = setup_logging()
 
-# Validate required environment variables
+
 def validate_env_vars():
     required_vars = ["DATABASE_URL", "KAFKA_BOOTSTRAP_SERVERS", "KAFKA_CONSUMER_TOPIC", "OLLAMA_HOST"]
     missing = [var for var in required_vars if not os.getenv(var) and var != "DATABASE_URL"]
@@ -56,18 +56,17 @@ except RuntimeError as e:
     logger.critical(f"Configuration Error: {e}")
     raise
 
-# engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_size=20, max_overflow=0)
 engine = create_async_engine(
     DATABASE_URL,
-    pool_pre_ping=True,           # Test connection before use
-    pool_size=20,                 # Base pool size
-    max_overflow=10,              # Allow 10 overflow connections
-    pool_recycle=3600,            # Recycle connections every hour
-    pool_timeout=30,              # Wait 30s for available connection
-    echo_pool=False,              # Set to True for debugging
+    pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=10,
+    pool_recycle=3600,
+    pool_timeout=30,
+    echo_pool=False,
     connect_args={
-        "timeout": 10,            # Connection timeout
-        "command_timeout": 10,    # Command timeout
+        "timeout": 10,
+        "command_timeout": 10,
         "server_settings": {
             "application_name": "sentinel_health_agent"
         }
@@ -75,14 +74,10 @@ engine = create_async_engine(
 )
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-# Reusable ProcessAlerts instance
-process_alerts_instance = None
-
-# RAG service instance
-rag_service = None
-
+process_alerts_instance: Optional[ProcessAlerts] = None
+rag_service: Optional[MedicalRAG] = None
 kafka_consumer = None
-kafka_task = None
+kafka_task: Optional[asyncio.Task] = None
 MAX_RETRIES = 5
 RETRY_DELAY = 5
 KAFKA_POLL_TIMEOUT = 1000
@@ -103,14 +98,19 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize RAG service: {e}", exc_info=True)
         raise
 
-    # Initialize ProcessAlerts once
+    # Initialize ProcessAlerts with RAG service injected
     process_alerts_instance = ProcessAlerts(AsyncSessionLocal, rag_service)
+
+    # Expose shared resources on app.state for routers to access
+    app.state.session_factory = AsyncSessionLocal
+    app.state.rag_service = rag_service
+    app.state.chatbot_graphs = {}           # session_id → compiled LangGraph
 
     kafka_task = asyncio.create_task(blocking_kafka_loop())
     logger.info("✅ Kafka consumer task created")
     yield
-    logger.info("🛑 Shutting down application...")
 
+    logger.info("🛑 Shutting down application...")
     if kafka_task:
         kafka_task.cancel()
         try:
@@ -118,7 +118,6 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, asyncio.TimeoutError):
             logger.warning("⚠️  Kafka consumer shutdown timeout exceeded")
 
-    # Cleanup RAG service
     if rag_service:
         await rag_service.close()
 
@@ -160,6 +159,7 @@ async def blocking_kafka_loop():
                                 data = record.value
                                 alert_status = data.get("status")
                                 if alert_status in ["CRITICAL", "WARNING"]:
+                                    assert process_alerts_instance is not None
                                     await process_alerts_instance.process_critical_alert(data, data.get("heart_rate"))
                                     messages_processed += 1
                                     logger.debug(f"✅ Processed {messages_processed} critical alerts")
@@ -171,7 +171,7 @@ async def blocking_kafka_loop():
                     raise
                 except Exception as e:
                     logger.error(f"❌ Error polling Kafka: {e}", exc_info=True)
-                    await asyncio.sleep(1)  # Brief pause before retry
+                    await asyncio.sleep(1)
 
         except (KafkaError, ConnectionError) as e:
             retry_count += 1
@@ -191,31 +191,44 @@ async def blocking_kafka_loop():
                 kafka_consumer = None
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Sentinel Health Agent",
+    description="AI-powered real-time clinical alert monitoring with RAG + LangGraph",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
+# ── Register routers ──────────────────────────────────────────────────────────
+app.include_router(patients_router.router)
+app.include_router(chatbot_router.router)
+
+
+# ── Core endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health_check():
-    """Comprehensive health check endpoint"""
+    """Comprehensive health check endpoint."""
+    task_running = kafka_task is not None and not kafka_task.done()
     return {
         "status": "healthy",
         "kafka_connected": kafka_consumer is not None,
-        "kafka_task_running": kafka_task is not None and not kafka_task.done(),
-        "timestamp": str(__import__('datetime').datetime.now())
+        "kafka_task_running": task_running,
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
 @app.get("/health/rag")
 async def rag_health_check():
-    """Health check specifically for RAG service"""
+    """Health check specifically for RAG service."""
     if rag_service is None:
         return {"status": "unhealthy", "error": "RAG service not initialized"}
+    assert rag_service is not None
     return await rag_service.health_check()
 
 
 @app.get("/")
 async def status():
-    return {"status": "Agent Active"}
+    return {"status": "Agent Active", "version": "1.0.0"}
 
 
 @app.get("/history", response_model=List[ClinicalAlertResponse])
@@ -228,40 +241,27 @@ async def get_alert_history(limit: int = 10, patient_id: str = "PATIENT_001"):
 async def upload_document(
         background_tasks: BackgroundTasks,
         file: UploadFile = File(...)
-)-> UploadResponse:
-    """
-    Upload a PDF file for medical knowledge indexing.
-
-    Args:
-        background_tasks: FastAPI background tasks
-        file: PDF file to upload
-
-    Returns:
-        UploadResponse with job details
-
-    Raises:
-        HTTPException: If file is not PDF
-    """
+) -> UploadResponse:
+    """Upload a PDF file for medical knowledge indexing."""
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
-    # 2. Save file temporarily
     temp_id = str(uuid.uuid4())
     temp_path = f"temp_{temp_id}_{file.filename}"
 
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    # 3. Add indexing to Background Tasks
-    # This runs AFTER the response is sent to the user
     async def run_indexing(file_path: str):
-        """Worker function to process the file and cleanup."""
         try:
-
             rag_manager = await PostgresRAGManager.create(engine, VECTOR_TABLE_NAME, OLLAMA_HOST)
             await rag_manager.index_file(file_path)
+        except Exception as e:
+            logger.error(f"Background indexing failed for {file_path}: {e}", exc_info=True)
         finally:
-            # 4. Always cleanup the temp file
             if os.path.exists(file_path):
                 os.remove(file_path)
 
@@ -272,6 +272,7 @@ async def upload_document(
         status="Indexing started in background",
         job_id=temp_id
     )
+
 
 if __name__ == "__main__":
     import uvicorn

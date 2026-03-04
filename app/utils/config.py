@@ -39,6 +39,16 @@ POSTGRES_CLINICAL_ALERTS_TABLE = _get_env(
     "POSTGRES_CLINICAL_ALERTS_TABLE",
     required=True
 )
+POSTGRES_PATIENTS_TABLE = _get_env(
+    "POSTGRES_PATIENTS_TABLE",
+    default="patients",
+    required=False
+)
+POSTGRES_MEDICAL_HISTORY_TABLE = _get_env(
+    "POSTGRES_MEDICAL_HISTORY_TABLE",
+    default="medical_history",
+    required=False
+)
 VECTOR_TABLE_NAME = _get_env("VECTOR_TABLE_NAME", required=True)
 
 # Construct DATABASE_URL
