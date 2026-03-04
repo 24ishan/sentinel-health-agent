@@ -1,23 +1,42 @@
 import asyncio
-from contextlib import asynccontextmanager
-from fastapi import FastAPI,UploadFile, File, BackgroundTasks, HTTPException
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from app import setup_logging
-from app.backend.services.history import AlertHistory
-from app.backend.schemas import ClinicalAlertResponse
-from utils.config import DATABASE_URL, VECTOR_TABLE_NAME, OLLAMA_HOST
-from app.backend.services.rag_service import MedicalRAG
 import json
+import os
+import shutil
+import uuid
+from contextlib import asynccontextmanager
+from typing import List, Optional
+
+from fastapi import BackgroundTasks, File, FastAPI, HTTPException, UploadFile
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+from app import setup_logging
+from app.backend.schemas import ClinicalAlertResponse
+from app.backend.services.history import AlertHistory
 from app.backend.services.process_alerts import ProcessAlerts
-from utils.config import KAFKA_CONSUMER_TOPIC, KAFKA_BOOTSTRAP_SERVERS
-from typing import List
-import os
-import uuid
-import shutil
+from app.backend.services.rag_service import MedicalRAG
+from app.utils.config import (
+    DATABASE_URL,
+    KAFKA_BOOTSTRAP_SERVERS,
+    KAFKA_CONSUMER_TOPIC,
+    OLLAMA_HOST,
+    VECTOR_TABLE_NAME,
+)
+from app.backend.constants import (
+    KAFKA_AUTO_OFFSET_RESET,
+    KAFKA_MAX_POLL_RECORDS,
+    KAFKA_MAX_RETRIES,
+    KAFKA_POLL_TIMEOUT_MS,
+    KAFKA_RECONNECT_BACKOFF_MAX_MS,
+    KAFKA_RECONNECT_BACKOFF_MS,
+    KAFKA_REQUEST_TIMEOUT_MS,
+    KAFKA_RETRY_DELAY_SECONDS,
+    KAFKA_SESSION_TIMEOUT_MS,
+)
 from app.vector_db.ingest_pdf import PostgresRAGManager
+from app.backend.schemas import UploadResponse, HealthCheckResponse, RAGHealthResponse
 
 logger = setup_logging()
 
@@ -37,7 +56,23 @@ except RuntimeError as e:
     logger.critical(f"Configuration Error: {e}")
     raise
 
-engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_size=20, max_overflow=0)
+# engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_size=20, max_overflow=0)
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,           # Test connection before use
+    pool_size=20,                 # Base pool size
+    max_overflow=10,              # Allow 10 overflow connections
+    pool_recycle=3600,            # Recycle connections every hour
+    pool_timeout=30,              # Wait 30s for available connection
+    echo_pool=False,              # Set to True for debugging
+    connect_args={
+        "timeout": 10,            # Connection timeout
+        "command_timeout": 10,    # Command timeout
+        "server_settings": {
+            "application_name": "sentinel_health_agent"
+        }
+    }
+)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # Reusable ProcessAlerts instance
@@ -102,11 +137,11 @@ async def blocking_kafka_loop():
                 KAFKA_CONSUMER_TOPIC,
                 bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                auto_offset_reset='latest',
-                session_timeout_ms=30000,
-                request_timeout_ms=40000,
-                reconnect_backoff_ms=1000,
-                reconnect_backoff_max_ms=10000,
+                auto_offset_reset=KAFKA_AUTO_OFFSET_RESET,
+                session_timeout_ms=KAFKA_SESSION_TIMEOUT_MS,
+                request_timeout_ms=KAFKA_REQUEST_TIMEOUT_MS,
+                reconnect_backoff_ms=KAFKA_RECONNECT_BACKOFF_MS,
+                reconnect_backoff_max_ms=KAFKA_RECONNECT_BACKOFF_MAX_MS,
             )
             retry_count = 0
             logger.info(f"📡 Kafka connected, monitoring topic: {KAFKA_CONSUMER_TOPIC}")
@@ -123,7 +158,8 @@ async def blocking_kafka_loop():
                         for record in records:
                             try:
                                 data = record.value
-                                if data.get("status") == "CRITICAL":
+                                alert_status = data.get("status")
+                                if alert_status in ["CRITICAL", "WARNING"]:
                                     await process_alerts_instance.process_critical_alert(data, data.get("heart_rate"))
                                     messages_processed += 1
                                     logger.debug(f"✅ Processed {messages_processed} critical alerts")
@@ -141,8 +177,8 @@ async def blocking_kafka_loop():
             retry_count += 1
             logger.error(f"⚠️  Kafka connection failed (attempt {retry_count}/{MAX_RETRIES}): {e}")
             if retry_count < MAX_RETRIES:
-                logger.info(f"🔄 Retrying in {RETRY_DELAY} seconds...")
-                await asyncio.sleep(RETRY_DELAY)
+                logger.info(f"🔄 Retrying in {KAFKA_RETRY_DELAY_SECONDS} seconds...")
+                await asyncio.sleep(KAFKA_RETRY_DELAY_SECONDS)
             else:
                 logger.critical(f"🔴 Max Kafka retries ({MAX_RETRIES}) exceeded. Shutting down.")
         finally:
@@ -188,13 +224,23 @@ async def get_alert_history(limit: int = 10, patient_id: str = "PATIENT_001"):
     return await history_obj.get_alert_history(limit, patient_id)
 
 
-@app.post("/upload")
+@app.post("/upload", response_model=UploadResponse)
 async def upload_document(
         background_tasks: BackgroundTasks,
         file: UploadFile = File(...)
-):
+)-> UploadResponse:
     """
-    Uploads a PDF and triggers background indexing.
+    Upload a PDF file for medical knowledge indexing.
+
+    Args:
+        background_tasks: FastAPI background tasks
+        file: PDF file to upload
+
+    Returns:
+        UploadResponse with job details
+
+    Raises:
+        HTTPException: If file is not PDF
     """
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
@@ -221,11 +267,11 @@ async def upload_document(
 
     background_tasks.add_task(run_indexing, temp_path)
 
-    return {
-        "message": f"File '{file.filename}' uploaded successfully.",
-        "status": "Indexing started in background",
-        "job_id": temp_id
-    }
+    return UploadResponse(
+        message=f"File '{file.filename}' uploaded successfully.",
+        status="Indexing started in background",
+        job_id=temp_id
+    )
 
 if __name__ == "__main__":
     import uvicorn
