@@ -13,11 +13,11 @@ from typing import Optional
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_postgres import PGVectorStore, PGEngine
 
-from utils.config import (
+from app.utils.config import (
     DATABASE_URL,
     VECTOR_TABLE_NAME,
     MEDICAL_EMBEDDING_MODEL,
-    LLM_MODEL,
+    LLM_MODEL
 )
 from app import setup_logging
 from app.backend.services.prompts import ClinicalPrompts
