@@ -5,6 +5,7 @@ from langchain_postgres import PGVectorStore, PGEngine
 from langchain_ollama import OllamaEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from utils.config import MEDICAL_EMBEDDING_MODEL
 from app import setup_logging
 logger = setup_logging()
 
@@ -32,7 +33,7 @@ class PostgresRAGManager:
             try:
                 logger.info(f"Connecting to Ollama ({self.ollama_host})... Attempt {attempt}/{max_retries}")
                 embeddings = OllamaEmbeddings(
-                    model="nomic-embed-text",
+                    model=MEDICAL_EMBEDDING_MODEL,
                     base_url=self.ollama_host
                 )
                 # Test connection
@@ -151,7 +152,7 @@ class PostgresRAGManager:
 if __name__ == "__main__":
 
     async def main():
-        from app.config import DATABASE_URL, VECTOR_TABLE_NAME, OLLAMA_HOST
+        from utils.config import DATABASE_URL, VECTOR_TABLE_NAME, OLLAMA_HOST
         from sqlalchemy.ext.asyncio import create_async_engine
 
         # 1. Create the Async Engine

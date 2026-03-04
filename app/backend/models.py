@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
-from app.config import POSTGRES_CLINICAL_ALERTS_TABLE
+from utils.config import POSTGRES_CLINICAL_ALERTS_TABLE
 Base = declarative_base()
 
 class ClinicalAlert(Base):

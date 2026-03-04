@@ -1,17 +1,18 @@
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI,UploadFile, File, BackgroundTasks, HTTPException, Depends
+from fastapi import FastAPI,UploadFile, File, BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from app import setup_logging
 from app.backend.services.history import AlertHistory
 from app.backend.schemas import ClinicalAlertResponse
-from app.config import DATABASE_URL, VECTOR_TABLE_NAME, OLLAMA_HOST
+from utils.config import DATABASE_URL, VECTOR_TABLE_NAME, OLLAMA_HOST
+from app.backend.services.rag_service import MedicalRAG
 import json
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
 from app.backend.services.process_alerts import ProcessAlerts
-from config import KAFKA_CONSUMER_TOPIC, KAFKA_BOOTSTRAP_SERVERS
+from utils.config import KAFKA_CONSUMER_TOPIC, KAFKA_BOOTSTRAP_SERVERS
 from typing import List
 import os
 import uuid
@@ -42,6 +43,9 @@ AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=F
 # Reusable ProcessAlerts instance
 process_alerts_instance = None
 
+# RAG service instance
+rag_service = None
+
 kafka_consumer = None
 kafka_task = None
 MAX_RETRIES = 5
@@ -52,11 +56,20 @@ MAX_POLL_RECORDS = 10
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global kafka_task, process_alerts_instance
+    global kafka_task, process_alerts_instance, rag_service
     logger.info("🚀 Starting Sentinel Health Agent...")
 
+    # Initialize RAG service
+    try:
+        rag_service = MedicalRAG()
+        await rag_service.initialize()
+        logger.info("✅ RAG service initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize RAG service: {e}", exc_info=True)
+        raise
+
     # Initialize ProcessAlerts once
-    process_alerts_instance = ProcessAlerts(AsyncSessionLocal, logger)
+    process_alerts_instance = ProcessAlerts(AsyncSessionLocal)
 
     kafka_task = asyncio.create_task(blocking_kafka_loop())
     logger.info("✅ Kafka consumer task created")
@@ -69,6 +82,10 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(kafka_task, timeout=10)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             logger.warning("⚠️  Kafka consumer shutdown timeout exceeded")
+
+    # Cleanup RAG service
+    if rag_service:
+        await rag_service.close()
 
     await engine.dispose()
     logger.info("✅ Application shutdown complete")
@@ -150,6 +167,14 @@ async def health_check():
         "kafka_task_running": kafka_task is not None and not kafka_task.done(),
         "timestamp": str(__import__('datetime').datetime.now())
     }
+
+
+@app.get("/health/rag")
+async def rag_health_check():
+    """Health check specifically for RAG service"""
+    if rag_service is None:
+        return {"status": "unhealthy", "error": "RAG service not initialized"}
+    return await rag_service.health_check()
 
 
 @app.get("/")

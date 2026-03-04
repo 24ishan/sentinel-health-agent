@@ -7,9 +7,35 @@ from app import setup_logging
 logger = setup_logging()
 
 class ProcessAlerts:
-    def __init__(self,AsyncSessionLocal: sessionmaker):
+    def __init__(self, AsyncSessionLocal: sessionmaker):
+        """
+        Initialize ProcessAlerts.
+
+        Args:
+            AsyncSessionLocal: SQLAlchemy async session factory
+        """
         self.AsyncSessionLocal = AsyncSessionLocal
-        self.rag_agent = MedicalRAG()
+        self._rag_agent: MedicalRAG | None = None
+
+    async def _get_rag_agent(self) -> MedicalRAG:
+        """
+        Lazy initialization of RAG agent.
+
+        Returns:
+            MedicalRAG: Initialized RAG service instance
+
+        Raises:
+            RuntimeError: If RAG service initialization fails
+        """
+        if self._rag_agent is None:
+            self._rag_agent = MedicalRAG()
+            try:
+                await self._rag_agent.initialize()
+            except Exception as e:
+                logger.error(f"Failed to initialize RAG service: {e}", exc_info=True)
+                self._rag_agent = None
+                raise
+        return self._rag_agent
 
     async def process_critical_alert(self, data: dict, hr: int) -> dict:
         """Process critical alert and return status.
@@ -34,7 +60,15 @@ class ProcessAlerts:
                 raise ValueError("patient_id is required")
             if not isinstance(hr, (int, float)) or hr <= 0:
                 raise ValueError(f"Invalid heart rate: {hr}")
-            advice = await self.rag_agent.get_clinical_advice(hr)
+
+            # Get RAG agent with lazy initialization
+            try:
+                rag_agent = await self._get_rag_agent()
+            except RuntimeError as e:
+                logger.error(f"RAG service unavailable: {e}")
+                return {"status": "failed", "reason": "rag_service_unavailable", "message": str(e)}
+
+            advice = await rag_agent.get_clinical_advice(hr)
             logger.debug(f"Starting DB save for patient {patient_id}, HR {hr}, advice: {advice}")
             try:
                 async with self.AsyncSessionLocal() as session:
