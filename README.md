@@ -121,11 +121,24 @@ cp .env.example .env   # Edit with your values
 ### 2. Environment Variables
 
 ```env
-DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/sentinel
+# Database Credentials
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER_NAME=admin
+POSTGRES_PASSWORD=password123
+POSTGRES_DB=health_agent
+POSTGRES_CLINICAL_ALERTS_TABLE=clinical_alerts
+VECTOR_TABLE_NAME=medical_knowledge
+
+# Kafka Settings
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-KAFKA_CONSUMER_TOPIC=health-alerts
-OLLAMA_HOST=http://localhost:11434
-VECTOR_TABLE_NAME=medical_embeddings
+KAFKA_CONSUMER_TOPIC=vitals_stream
+
+# Ollama Settings
+OLLAMA_HOST=http://192.168.1.2:11434
+NO_PROXY=localhost,127.0.0.1,192.168.1.2
+MEDICAL_EMBEDDING_MODEL=nomic-embed-text
+LLM_MODEL=llama3
 ```
 
 ### 3. Start Infrastructure
