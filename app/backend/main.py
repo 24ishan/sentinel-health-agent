@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI):
         raise
 
     # Initialize ProcessAlerts once
-    process_alerts_instance = ProcessAlerts(AsyncSessionLocal)
+    process_alerts_instance = ProcessAlerts(AsyncSessionLocal, rag_service)
 
     kafka_task = asyncio.create_task(blocking_kafka_loop())
     logger.info("✅ Kafka consumer task created")
