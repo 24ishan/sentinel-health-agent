@@ -1,10 +1,19 @@
+"""
+Alert processing service.
+
+Consumes raw Kafka alert payloads, enriches them with patient context
+from the database and clinical guidelines from the RAG knowledge base,
+then persists the result as a ClinicalAlert record.
+"""
 import asyncio
+
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from app.backend.models import ClinicalAlert, Patient, MedicalHistory
-from app.backend.services.rag_service import MedicalRAG
-from app.backend.services.prompts import ClinicalPrompts
+
 from app import setup_logging
+from app.backend.models import ClinicalAlert, MedicalHistory, Patient
+from app.backend.services.prompts import ClinicalPrompts
+from app.backend.services.rag_service import MedicalRAG
 
 logger = setup_logging()
 

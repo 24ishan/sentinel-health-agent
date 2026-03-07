@@ -1,38 +1,79 @@
 """
 MCP-style tools for the Nurse Chatbot LangGraph agent.
-Each function is decorated with @tool from langchain_core, making it
-self-describing (name + docstring + type hints → JSON schema) and
-callable by the LLM automatically via LangGraph's ToolNode.
-These tools act as the "MCP server" interface — the LangGraph agent
-autonomously decides which tools to call based on the nurse's question.
+
+Each tool is a method on `PatientToolkit` wrapped with LangChain's
+`StructuredTool.from_function` so the LLM receives a proper JSON schema
+for each tool.  The class pattern replaces the previous factory function
+with nested `@tool` closures, making the code testable and class-scoped.
+
+Usage:
+    toolkit = PatientToolkit(session, rag_service)
+    tools   = toolkit.get_tools()   # pass to ChatbotGraphBuilder(tools).build()
 """
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app import setup_logging
+
 logger = setup_logging()
-def build_patient_tools(session: AsyncSession, rag_service=None):
+
+
+# ---------------------------------------------------------------------------
+# Pydantic input schemas — give the LLM precise JSON schemas for each tool
+# ---------------------------------------------------------------------------
+
+class PatientIdInput(BaseModel):
+    """Input schema for tools that take only a patient ID."""
+    patient_id: str = Field(..., description="The patient's unique identifier e.g. PATIENT_001")
+
+
+class RecentAlertsInput(BaseModel):
+    """Input schema for get_recent_alerts."""
+    patient_id: str = Field(..., description="The patient's unique identifier e.g. PATIENT_001")
+    limit: int = Field(5, description="Number of recent alerts to retrieve (default 5, max 20)")
+
+
+class MedicalKnowledgeInput(BaseModel):
+    """Input schema for search_medical_knowledge."""
+    query: str = Field(..., description="Clinical question e.g. 'tachycardia treatment guidelines'")
+
+
+# ---------------------------------------------------------------------------
+# Patient toolkit
+# ---------------------------------------------------------------------------
+
+class PatientToolkit:
     """
-    Factory that builds LangChain tools with injected DB session + RAG.
-    Using a factory pattern because async tools need access to runtime
-    resources (DB session, RAG service) that aren't available at import time.
+    Provides LangChain tools that give the nurse chatbot access to patient
+    data (DB) and the medical knowledge base (RAG vector store).
+
+    Each private `_tool_*` method implements the tool logic.
+    `get_tools()` wraps them with `StructuredTool.from_function` so
+    LangGraph's ToolNode can execute them automatically.
+
     Args:
-        session: Active async SQLAlchemy session
-        rag_service: Initialized MedicalRAG instance (optional)
-    Returns:
-        list: LangChain @tool decorated async functions ready for LangGraph
+        session:     Active async SQLAlchemy session scoped to the request.
+        rag_service: Initialised MedicalRAG instance (optional — tools
+                     degrade gracefully when RAG is unavailable).
     """
-    @tool
-    async def get_patient_profile(patient_id: str) -> str:
+
+    def __init__(self, session: AsyncSession, rag_service=None) -> None:
+        self._session = session
+        self._rag = rag_service
+
+    # ── Tool implementations ─────────────────────────────────────────────
+
+    async def _tool_get_patient_profile(self, patient_id: str) -> str:
         """
         Retrieve the basic demographic profile of a patient.
         Use this to get the patient's name, gender, date of birth, and contact info.
-        Args:
-            patient_id: The patient's unique identifier e.g. PATIENT_001
         """
         from app.backend.models import Patient
+
         try:
-            patient = await session.get(Patient, patient_id)
+            patient = await self._session.get(Patient, patient_id)
             if not patient:
                 return f"No patient found with ID '{patient_id}'."
             return (
@@ -44,21 +85,20 @@ def build_patient_tools(session: AsyncSession, rag_service=None):
                 f"  Phone: {patient.contact_phone or 'Not provided'}\n"
                 f"  Email: {patient.contact_email or 'Not provided'}"
             )
-        except Exception as e:
-            logger.error(f"get_patient_profile error: {e}")
-            return f"Error retrieving patient profile: {str(e)}"
-    @tool
-    async def get_medical_history(patient_id: str) -> str:
+        except Exception as exc:
+            logger.error(f"get_patient_profile error: {exc}")
+            return f"Error retrieving patient profile: {exc}"
+
+    async def _tool_get_medical_history(self, patient_id: str) -> str:
         """
         Retrieve the complete medical history of a patient.
         Returns allergies, current medications, chronic conditions,
         past surgeries, family history, and clinical notes.
-        Args:
-            patient_id: The patient's unique identifier e.g. PATIENT_001
         """
         from app.backend.models import MedicalHistory
+
         try:
-            result = await session.execute(
+            result = await self._session.execute(
                 select(MedicalHistory).where(MedicalHistory.patient_id == patient_id)
             )
             history = result.scalar_one_or_none()
@@ -73,22 +113,20 @@ def build_patient_tools(session: AsyncSession, rag_service=None):
                 f"  Family History: {history.family_history or 'None'}\n"
                 f"  Notes: {history.notes or 'None'}"
             )
-        except Exception as e:
-            logger.error(f"get_medical_history error: {e}")
-            return f"Error retrieving medical history: {str(e)}"
-    @tool
-    async def get_recent_alerts(patient_id: str, limit: int = 5) -> str:
+        except Exception as exc:
+            logger.error(f"get_medical_history error: {exc}")
+            return f"Error retrieving medical history: {exc}"
+
+    async def _tool_get_recent_alerts(self, patient_id: str, limit: int = 5) -> str:
         """
         Retrieve recent clinical alerts for a patient, ordered newest first.
         Use this to understand recent vital sign events and the AI advice given.
-        Args:
-            patient_id: The patient's unique identifier e.g. PATIENT_001
-            limit: Number of recent alerts to retrieve (default 5, max 20)
         """
         from app.backend.models import ClinicalAlert
+
         try:
-            limit = min(limit, 20)
-            result = await session.execute(
+            limit = min(limit, 20)  # Hard cap to prevent abuse
+            result = await self._session.execute(
                 select(ClinicalAlert)
                 .where(ClinicalAlert.patient_id == patient_id)
                 .order_by(ClinicalAlert.timestamp.desc())
@@ -98,39 +136,87 @@ def build_patient_tools(session: AsyncSession, rag_service=None):
             if not alerts:
                 return f"No alerts found for patient '{patient_id}'."
             lines = [f"Recent {len(alerts)} alert(s) for {patient_id}:"]
-            for a in alerts:
+            for alert in alerts:
                 lines.append(
-                    f"  [{a.timestamp.strftime('%Y-%m-%d %H:%M')}] "
-                    f"Status: {a.status} | HR: {a.heart_rate} BPM | "
-                    f"AI Advice: {a.ai_advice}"
+                    f"  [{alert.timestamp.strftime('%Y-%m-%d %H:%M')}] "
+                    f"Status: {alert.status} | HR: {alert.heart_rate} BPM | "
+                    f"AI Advice: {alert.ai_advice}"
                 )
             return "\n".join(lines)
-        except Exception as e:
-            logger.error(f"get_recent_alerts error: {e}")
-            return f"Error retrieving alerts: {str(e)}"
-    @tool
-    async def search_medical_knowledge(query: str) -> str:
+        except Exception as exc:
+            logger.error(f"get_recent_alerts error: {exc}")
+            return f"Error retrieving alerts: {exc}"
+
+    async def _tool_search_medical_knowledge(self, query: str) -> str:
         """
         Search the medical knowledge base (clinical guidelines, uploaded PDFs)
         for evidence-based information on a condition, treatment, or vital sign.
-        Args:
-            query: Clinical question e.g. 'tachycardia treatment guidelines'
         """
-        if rag_service is None:
+        if self._rag is None:
             return "Medical knowledge base is currently unavailable."
         try:
-            store = await rag_service._get_store()
+            store = await self._rag._get_store()
             docs = await store.asimilarity_search(query, k=3)
             if not docs:
                 return "No relevant clinical guidelines found for this query."
+            # Limit response to 2000 characters to keep the LLM prompt manageable
             context = "\n---\n".join([doc.page_content for doc in docs])
             return f"Clinical Knowledge Base Results:\n{context[:2000]}"
-        except Exception as e:
-            logger.error(f"search_medical_knowledge error: {e}")
-            return f"Error searching knowledge base: {str(e)}"
-    return [
-        get_patient_profile,
-        get_medical_history,
-        get_recent_alerts,
-        search_medical_knowledge,
-    ]
+        except Exception as exc:
+            logger.error(f"search_medical_knowledge error: {exc}")
+            return f"Error searching knowledge base: {exc}"
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def get_tools(self) -> list:
+        """
+        Return all tools as LangChain StructuredTool instances.
+
+        StructuredTool.from_function wraps each async coroutine method
+        with the correct Pydantic schema so the LLM receives a well-typed
+        JSON schema — this is required because @tool does not work natively
+        on instance methods (self would leak into the tool schema).
+
+        Returns:
+            list: Ready-to-use LangChain tools for LangGraph's ToolNode.
+        """
+        return [
+            StructuredTool.from_function(
+                coroutine=self._tool_get_patient_profile,
+                name="get_patient_profile",
+                description=(
+                    "Retrieve the basic demographic profile of a patient. "
+                    "Use this to get the patient's name, gender, date of birth, and contact info."
+                ),
+                args_schema=PatientIdInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=self._tool_get_medical_history,
+                name="get_medical_history",
+                description=(
+                    "Retrieve the complete medical history of a patient. "
+                    "Returns allergies, current medications, chronic conditions, "
+                    "past surgeries, family history, and clinical notes."
+                ),
+                args_schema=PatientIdInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=self._tool_get_recent_alerts,
+                name="get_recent_alerts",
+                description=(
+                    "Retrieve recent clinical alerts for a patient, ordered newest first. "
+                    "Use this to understand recent vital sign events and the AI advice given."
+                ),
+                args_schema=RecentAlertsInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=self._tool_search_medical_knowledge,
+                name="search_medical_knowledge",
+                description=(
+                    "Search the medical knowledge base (clinical guidelines, uploaded PDFs) "
+                    "for evidence-based information on a condition, treatment, or vital sign."
+                ),
+                args_schema=MedicalKnowledgeInput,
+            ),
+        ]
+

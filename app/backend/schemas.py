@@ -1,6 +1,17 @@
-from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime, date
-from typing import Optional, List
+"""
+Pydantic request / response schemas for the Sentinel Health Agent API.
+
+Grouped by domain:
+  - Alert schemas      → ClinicalAlertResponse, HealthCheckResponse, RAGHealthResponse
+  - Upload schemas     → UploadResponse
+  - Patient schemas    → PatientCreate, PatientUpdate, PatientResponse
+  - History schemas    → MedicalHistoryCreate, MedicalHistoryResponse
+  - Chatbot schemas    → ChatRequest, ChatResponse
+"""
+from datetime import date, datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 # ─────────────────────────────────────────────
 # Existing Alert Schemas

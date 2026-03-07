@@ -11,7 +11,6 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import setup_logging
 from app.backend.models import Patient, MedicalHistory
@@ -131,8 +130,6 @@ async def get_medical_history(patient_id: str, request: Request):
                 detail=f"No medical history found for patient '{patient_id}'."
             )
         return history
-
-
 
 
 
