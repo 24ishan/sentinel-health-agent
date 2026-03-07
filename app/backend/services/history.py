@@ -1,6 +1,14 @@
-from sqlalchemy import select
+"""
+Alert history service.
+
+Provides read-only access to persisted ClinicalAlert records, used by
+the /history endpoint in the core router.
+"""
 from typing import List, Optional
+
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
+
 from app.backend.models import ClinicalAlert
 
 class AlertHistory:

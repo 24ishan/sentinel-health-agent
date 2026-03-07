@@ -5,6 +5,7 @@ python-multipart==0.0.22
 
 # --- AI, RAG & LLM ---
 langchain==1.2.10
+langchain-core==0.3.63
 langchain-community==0.4.1
 langchain-ollama==1.0.1
 langchain-postgres==0.0.17
